@@ -3,14 +3,16 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordRequestForm
+
 
 from ..database import get_db
 from ..models import User
 from ..schemas import UserCreate, LoginRequest, UserResponse, TokenResponse
 
-# =============================
+
 # Configuración JWT Y HASHING
-# =============================
+
 
 SECRET_KEY = "SUPER_SECRET_KEY"   # provisional, habría que cambiarlo para una app en producción
 ALGORITHM = "HS256"
@@ -23,9 +25,9 @@ router = APIRouter(  # Hacer que funcione como un router en FastAPI
     tags=["Auth"]
 )
 
-# =============================
+
 # UTILIDADES DE AUTENTICACIÓN
-# =============================
+
 
 def hash_password(password: str):  # devuelve el hash (bcrypt)
     return pwd_context.hash(password)
@@ -36,9 +38,9 @@ def verify_password(password: str, hashed: str):  # comprueba si el hash guardad
 def create_access_token(data: dict):  # crea un JWT usando el diccionario Data con la secret_key.
     return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
 
-# =============================
+
 # Se obtiene el usuario desde el JWT
-# =============================
+
 
 def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -65,9 +67,9 @@ def get_current_user(
     return user
 
 
-# =============================
+
 # Restricción por rol
-# =============================
+
 
 def require_role(required_role: str):
     def wrapper(current_user=Depends(get_current_user)):
@@ -80,14 +82,17 @@ def require_role(required_role: str):
     return wrapper
 
 
-# =============================
-# ENDPOINT: register
-# =============================
+
+# ENDPOINT: register  // Creado para el backend, para asi poder crear usuarios de prueba y demas
+
 
 @router.post("/register", response_model=UserResponse)
 def register(  # se reciben datos y se abre sesión de db
     payload: UserCreate,  # ahora se usa un schema que contiene username, email, password, role
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),  
+    # Protege register para que los usuarios solo puedan ser creados por otros usuarios admin
+
 ):
     if payload.role not in ["admin", "operario", "manager"]:
         raise HTTPException(400, "Rol no válido")
@@ -99,6 +104,8 @@ def register(  # se reciben datos y se abre sesión de db
 
     if exists:
         raise HTTPException(400, "Usuario o email ya existe")
+
+    print("PASSWORD RECIBIDA:", repr(payload.password), type(payload.password))
 
     # Crea el user y lo añade a la bd con una contraseña hasheada
     user = User(
@@ -115,17 +122,20 @@ def register(  # se reciben datos y se abre sesión de db
     return user  # gracias al response_model no devuelve la contraseña hash
 
 
-# =============================
+
 # ENDPOINT: login
-# =============================
 
-@router.post("/login", response_model=TokenResponse)  # recibe las credenciales del usuario
-def login(credentials: LoginRequest, db: Session = Depends(get_db)):
 
-    user = db.query(User).filter(User.username == credentials.username).first()
+@router.post("/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
 
+    user = db.query(User).filter(User.username == form_data.username).first()
     # se comprueba si el usuario existe y si la contraseña coincide con el hash en BD
-    if not user or not verify_password(credentials.password, user.hashed_password):
+
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(401, "Credenciales incorrectas")
 
     # genera el JWT con el nombre y el role.
@@ -142,18 +152,18 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
     )
 
 
-# =============================
+
 # endpoint para el current_user
-# =============================
+
 
 @router.get("/me", response_model=UserResponse)  # devuelve info del usuario logeado sin exponer la contraseña
 def me(user=Depends(get_current_user)):
     return user
 
 
-# =============================
+
 # endpoints por rol
-# =============================
+
 
 @router.get("/admin-only")
 def admin_only(user=Depends(require_role("admin"))):
